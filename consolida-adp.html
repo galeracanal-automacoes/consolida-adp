@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Consolidação ADP</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<style>
+:root{color-scheme:light dark;--bg:#f5f6f8;--surface:#fff;--text:#1b2430;--muted:#5d6978;--line:#d8dde4;--accent:#1f5fbf;--accent-text:#fff;--ok:#1d7a46;--err:#b3261e}
+@media (prefers-color-scheme:dark){:root{--bg:#14181e;--surface:#1d232b;--text:#e8ecf1;--muted:#9aa5b3;--line:#323b46;--accent:#6aa3f5;--accent-text:#0d1620;--ok:#5fcf8f;--err:#ff8a80}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:16px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;padding:24px 16px}
+main{max-width:900px;margin:0 auto}
+h1{font-size:1.5rem;margin:0 0 4px}
+p.sub{margin:0 0 24px;color:var(--muted)}
+label.drop{display:block;background:var(--surface);border:2px dashed var(--line);border-radius:10px;padding:24px;cursor:pointer;transition:border-color .15s}
+label.drop:hover,label.drop:focus-within,label.drop.over{border-color:var(--accent)}
+label.drop b{display:block;margin-bottom:2px}
+label.drop span{color:var(--muted);font-size:.9rem}
+input[type=file]{position:absolute;opacity:0;width:1px;height:1px}
+ul#list{list-style:none;margin:12px 0 0;padding:0;font-size:.9rem}
+ul#list li{padding:4px 0;border-bottom:1px solid var(--line);word-break:break-all}
+ul#list em{font-style:normal;color:var(--muted);margin-left:8px}
+.actions{margin:20px 0;display:flex;gap:12px;flex-wrap:wrap}
+button{font:inherit;font-weight:600;border:0;border-radius:8px;padding:10px 18px;background:var(--accent);color:var(--accent-text);cursor:pointer}
+button:disabled{opacity:.4;cursor:not-allowed}
+button.sec{background:transparent;color:var(--text);border:1px solid var(--line)}
+button:focus-visible,label.drop:focus-within{outline:3px solid var(--accent);outline-offset:2px}
+#msg{margin:0 0 16px;min-height:1.5em}
+#msg.err{color:var(--err)}#msg.ok{color:var(--ok)}
+.tablewrap{overflow-x:auto;background:var(--surface);border:1px solid var(--line);border-radius:10px}
+table{border-collapse:collapse;width:100%;font-size:.9rem}
+th,td{padding:8px 12px;text-align:left;border-bottom:1px solid var(--line);white-space:nowrap}
+th{color:var(--muted);font-weight:600}
+tr:last-child td{border-bottom:0}
+footer{margin-top:24px;color:var(--muted);font-size:.85rem}
+</style>
+</head>
+<body>
+<main>
+  <h1>Consolidação ADP</h1>
+  <p class="sub">Envie os arquivos CSV e XLS/XLSX juntos. Tudo é processado no seu navegador; nenhum arquivo sai do seu computador.</p>
+
+  <label class="drop" id="drop">
+    <b>Arquivos CSV e XLS/XLSX</b>
+    <span>Clique ou arraste os arquivos aqui. É preciso ao menos um CSV, que define a estrutura das colunas.</span>
+    <input type="file" id="file" accept=".csv,.xls,.xlsx" multiple>
+  </label>
+  <ul id="list"></ul>
+
+  <div class="actions">
+    <button id="run" disabled>Consolidar</button>
+    <button id="download" class="sec" disabled>Baixar arquivo</button>
+    <button id="clear" class="sec" disabled>Limpar</button>
+  </div>
+
+  <p id="msg" role="status"></p>
+  <div class="tablewrap" id="result" hidden></div>
+
+  <footer>Os XLS/XLSX têm as colunas renomeadas para o padrão do CSV (COD_USUARIO→CPF, MATRÍCULA→MATR etc.) e são empilhados abaixo dos CSVs. O arquivo final é salvo como adp_DD-MM-AAAA.xlsx.</footer>
+</main>
+
+<script>
+const MAPA = {
+  "COD_USUARIO":"CPF","NOME":"NOME","MATRÍCULA":"MATR","DATA_ADMISSÃO":"DT_ADM",
+  "DATA_DEMISSÃO":"DT_DESLIGAMENTO","MATRÍCULA_SUPERIOR":"MATRICULA_REPORT",
+  "CARGO":"DESCR_CARGO","STATUS":"STATUS","EMPRESA":"EMPR","COD_EMPRESA":"DESCR_EMP"
+};
+let selected = [], cols = [], rows = [];
+const $ = id => document.getElementById(id);
+const msg = (t, c='') => { $('msg').textContent = t; $('msg').className = c; };
+const ext = f => f.name.toLowerCase().split('.').pop();
+
+function refresh(){
+  $('list').innerHTML = selected.map(f => `<li>${f.name.replace(/[&<>]/g,'')}<em>${ext(f)==='csv'?'CSV':'Excel'}</em></li>`).join('');
+  $('run').disabled = !selected.length;
+  $('clear').disabled = !selected.length;
+}
+function add(fileList){
+  [...fileList].forEach(f => {
+    if(['csv','xls','xlsx'].includes(ext(f)) && !selected.some(s => s.name === f.name)) selected.push(f);
+  });
+  refresh();
+}
+const drop = $('drop');
+$('file').addEventListener('change', e => { add(e.target.files); e.target.value = ''; });
+['dragenter','dragover'].forEach(e => drop.addEventListener(e, ev => {ev.preventDefault(); drop.classList.add('over');}));
+['dragleave','drop'].forEach(e => drop.addEventListener(e, ev => {ev.preventDefault(); drop.classList.remove('over');}));
+drop.addEventListener('drop', ev => add(ev.dataTransfer.files));
+$('clear').addEventListener('click', () => {
+  selected = []; rows = []; cols = [];
+  refresh(); $('result').hidden = true; $('download').disabled = true; msg('');
+});
+
+// Lê CSV detectando o separador (; , tab |) e a codificação (UTF-8 ou Windows-1252)
+async function readCsv(file){
+  const buf = await file.arrayBuffer();
+  let text;
+  try { text = new TextDecoder('utf-8', {fatal:true}).decode(buf); }
+  catch { text = new TextDecoder('windows-1252').decode(buf); }
+  text = text.replace(/^\uFEFF/, '');
+  const first = text.split(/\r?\n/)[0] || '';
+  const FS = [';', ',', '\t', '|'].map(d => [d, first.split(d).length]).sort((a,b) => b[1]-a[1])[0][0];
+  const wb = XLSX.read(text, {type:'string', FS, raw:true});
+  return XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], {defval:'', raw:true});
+}
+async function readExcel(file){
+  const wb = XLSX.read(await file.arrayBuffer(), {type:'array', cellDates:true});
+  return XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], {defval:''});
+}
+
+$('run').addEventListener('click', async () => {
+  try{
+    msg('Processando…');
+    const csvs = selected.filter(f => ext(f) === 'csv');
+    const xlss = selected.filter(f => ext(f) !== 'csv');
+    if(!csvs.length) throw new Error('Envie ao menos um arquivo CSV: ele define as colunas do arquivo final.');
+
+    let csvRows = [];
+    for(const f of csvs) csvRows = csvRows.concat(await readCsv(f));
+
+    // colunas do CSV (união, na ordem em que aparecem)
+    cols = [];
+    csvRows.forEach(r => Object.keys(r).forEach(k => { if(!cols.includes(k)) cols.push(k); }));
+
+    let xlsRows = [];
+    for(const f of xlss){
+      const data = await readExcel(f);
+      data.forEach(r => {
+        const novo = {};
+        Object.entries(r).forEach(([k,v]) => { novo[MAPA[k] ?? k] = v; });
+        xlsRows.push(novo);
+      });
+    }
+    // mantém só colunas do CSV; as ausentes ficam vazias
+    xlsRows = xlsRows.map(r => Object.fromEntries(cols.filter(c => c in r).map(c => [c, r[c]])));
+
+    rows = csvRows.concat(xlsRows);
+    render();
+    $('download').disabled = !rows.length;
+    msg(`${rows.length} linhas consolidadas (${csvRows.length} dos CSVs, ${xlsRows.length} dos Excel).`, 'ok');
+  }catch(e){
+    msg(e.message, 'err');
+  }
+});
+
+function render(){
+  const box = $('result');
+  if(!rows.length){ box.hidden = true; return; }
+  const esc = s => String(s ?? '').replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+  const body = rows.slice(0,100).map(r => '<tr>' + cols.map(c => `<td>${esc(r[c] instanceof Date ? r[c].toLocaleDateString('pt-BR') : r[c])}</td>`).join('') + '</tr>').join('');
+  box.innerHTML = `<table><thead><tr>${cols.map(c=>`<th>${esc(c)}</th>`).join('')}</tr></thead><tbody>${body}</tbody></table>`;
+  box.hidden = false;
+}
+
+function nomeSaida(){
+  const d = new Date();
+  const p = n => String(n).padStart(2,'0');
+  return `adp_${p(d.getDate())}-${p(d.getMonth()+1)}-${d.getFullYear()}.xlsx`;
+}
+$('download').addEventListener('click', () => {
+  const ws = XLSX.utils.json_to_sheet(rows, {header: cols});
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Consolidado');
+  XLSX.writeFile(wb, nomeSaida());
+});
+</script>
+</body>
+</html>
